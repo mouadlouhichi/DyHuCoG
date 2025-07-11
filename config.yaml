@@ -1,0 +1,14 @@
+seed: 42
+data_path: data/ml-100k/interactions.csv
+implicit: true
+batch_size: 4096
+latent_dim: 64
+layers: 3
+shapley_samples: 256
+alpha_pref: 0.7
+lr: 0.001
+weight_decay: 0.0001
+epochs: 100
+eval_every: 5
+top_k: 10
+device: cuda
