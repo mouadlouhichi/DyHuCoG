@@ -269,7 +269,6 @@ class CooperativeGameTrainer:
 
     def train_shapley_step(self, user_items: torch.Tensor) -> float:
         """Single training step for Shapley network"""
-        import time
         
         # Remove the first column (index 0) which is padding for 1-indexed data
         user_items = user_items[:, 1:]  # Now shape is [batch_size, n_items]
