@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Explainability analysis script using SHAP
+Explainability analysis script using SHAP - Fixed for DyHuCoG
 """
 
 import os
@@ -20,6 +20,7 @@ from src.data.dataset import RecommenderDataset
 from src.explainability.shap_analyzer import SHAPAnalyzer
 from src.explainability.visualizer import ExplainabilityVisualizer
 from src.utils.logger import setup_logger
+from src.utils.graph_builder import GraphBuilder
 from scripts.evaluate import load_model_from_checkpoint
 
 
@@ -44,6 +45,17 @@ def parse_args():
                        help='Skip generating plots')
     
     return parser.parse_args()
+
+
+def build_model_graph(model, dataset, config, device):
+    """Build graph for DyHuCoG model"""
+    if config['model']['name'] == 'dyhucog':
+        # Compute edge weights
+        edge_weights = model.compute_shapley_weights(dataset.train_mat.to(device))
+        
+        # Build hypergraph with edge weights  
+        edge_index, edge_weight = GraphBuilder.get_edge_list(dataset, edge_weights)
+        model.build_hypergraph(edge_index.to(device), edge_weight.to(device), dataset.item_genres)
 
 
 def explain_individual_recommendation(analyzer: SHAPAnalyzer, 
@@ -229,6 +241,10 @@ def main():
         test_size=config['dataset']['test_size'],
         val_size=config['dataset']['val_size']
     )
+    
+    # Build model graph if needed
+    logger.info("Building model graph...")
+    build_model_graph(model, dataset, config, device)
     
     # Create SHAP analyzer
     logger.info("Creating SHAP analyzer...")

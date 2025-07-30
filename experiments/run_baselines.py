@@ -64,14 +64,6 @@ def run_single_experiment(model_name: str, dataset: RecommenderDataset,
     """
     logger.info(f"\nStarting {model_name} - Run {run_id}")
     
-    # Build graph
-    if model_name == 'dyhucog':
-        adj, n_nodes = GraphBuilder.build_hypergraph(dataset)
-    else:
-        adj, n_nodes = GraphBuilder.build_user_item_graph(dataset)
-    
-    adj = GraphBuilder.normalize_adj(adj).to(device)
-    
     # Create model
     if model_name == 'dyhucog':
         model = DyHuCoG(
@@ -101,6 +93,23 @@ def run_single_experiment(model_name: str, dataset: RecommenderDataset,
         
     model = model.to(device)
     
+    # Build graph and prepare model
+    if model_name == 'dyhucog':
+        # For DyHuCoG, we need to compute edge weights and build hypergraph
+        logger.info("Computing Shapley weights for DyHuCoG...")
+        edge_weights = model.compute_shapley_weights(dataset.train_mat.to(device))
+        
+        # Build hypergraph with edge weights
+        edge_index, edge_weight = GraphBuilder.get_edge_list(dataset, edge_weights)
+        model.build_hypergraph(edge_index.to(device), edge_weight.to(device), dataset.item_genres)
+        
+        # For DyHuCoG, adj is None in trainer
+        adj = None
+    else:
+        # For baseline models, build standard graph
+        adj, n_nodes = GraphBuilder.build_user_item_graph(dataset)
+        adj = GraphBuilder.normalize_adj(adj).to(device)
+    
     # Create output directories
     checkpoint_dir = Path(config['experiment']['checkpoint_dir']) / f"{model_name}_run{run_id}"
     log_dir = Path(config['experiment']['log_dir']) / f"{model_name}_run{run_id}"
@@ -116,7 +125,7 @@ def run_single_experiment(model_name: str, dataset: RecommenderDataset,
         device=device,
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,
-        adj=adj if model_name != 'dyhucog' else None
+        adj=adj
     )
     
     # Train model
@@ -131,7 +140,7 @@ def run_single_experiment(model_name: str, dataset: RecommenderDataset,
         model=model,
         dataset=dataset,
         device=device,
-        adj=adj if model_name != 'dyhucog' else None
+        adj=adj
     )
     
     cold_results = evaluator.evaluate_cold_start(config['evaluation']['k_values'])
@@ -270,6 +279,9 @@ def main():
     # Load configuration
     config = get_model_config(args.config).to_dict()
     config['dataset']['name'] = args.dataset
+    
+    # Fix num_workers for Colab
+    config['training']['num_workers'] = 0
     
     # Override device if specified
     if args.device != 'auto':
