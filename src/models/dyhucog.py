@@ -15,48 +15,54 @@ from ..utils.graph_builder import GraphBuilder
 
 class DyHuCoG(nn.Module):
     """Dynamic Hybrid Recommender via Graph-based Cooperative Games
-    
+
     Args:
         n_users: Number of users
-        n_items: Number of items  
-        n_genres: Number of context features (genres)
-        config: Model configuration dictionary
+        n_items: Number of items
+        n_genres: Number of genres (optional)
+        config: Model configuration dict
     """
-    
     def __init__(self, n_users: int, n_items: int, n_genres: int, config: Dict):
         super().__init__()
-        
+
         self.n_users = n_users
         self.n_items = n_items
         self.n_genres = n_genres
         self.n_nodes = n_users + n_items + n_genres
         self.config = config
-        
+
         # Extract config parameters
         self.latent_dim = config['latent_dim']
         self.n_layers = config['n_layers']
         self.dropout = config['dropout']
         self.use_attention = config.get('use_attention', True)
         self.use_genres = config.get('use_genres', True)
-        
+
         # Node embeddings
         self.embedding = nn.Embedding(self.n_nodes, self.latent_dim)
         nn.init.normal_(self.embedding.weight, std=0.01)
-        
+
         # Cooperative game components
+        # ❗️ FIXED: match DAE signature (input_dim, hidden_dim, output_dim, dropout)
         self.dae = CooperativeGameDAE(
-            n_items=n_items,
+            input_dim=n_items,
             hidden_dim=config['dae_hidden'],
+            output_dim=1,           # scalar value function
             dropout=self.dropout
         )
-        
+
+        # ❗️ FIXED: match ShapleyValueNetwork signature (input_dim, hidden_dim, n_items)
         self.shapley_net = ShapleyValueNetwork(
-            n_items=n_items,
+            input_dim=n_items,
             hidden_dim=config['shapley_hidden'],
-            n_samples=config.get('n_shapley_samples', 10)
+            n_items=n_items
         )
-        
-        # Attention mechanism
+
+        # Build GNN layers
+        self.gnn_layers = nn.ModuleList()
+        for _ in range(self.n_layers):
+            self.gnn_layers.append(GraphBuilder(self.latent_dim, self.use_attention))
+
         if self.use_attention:
             self.attention = nn.Sequential(
                 nn.Linear(self.latent_dim * 2, self.latent_dim),
@@ -64,49 +70,38 @@ class DyHuCoG(nn.Module):
                 nn.Linear(self.latent_dim, 1),
                 nn.Sigmoid()
             )
-        
+
         # Edge weights dictionary
         self.edge_weights = {}
         self.adj = None
-        
+
     def compute_shapley_weights(self, train_mat: torch.Tensor) -> Dict[Tuple[int, int], float]:
         """Compute Shapley value-based edge weights
-        
+
         Args:
             train_mat: User-item interaction matrix [n_users+1, n_items+1] (1-indexed)
-            
+
         Returns:
             Dictionary mapping (user, item) pairs to edge weights
         """
-        edge_weights = {}
-        
-        with torch.no_grad():
-            for user_id in range(1, self.n_users + 1):
-                user_items = train_mat[user_id]
-                
-                if user_items.sum() == 0:
-                    continue
-                
-                # Remove the first element (index 0) for proper dimensionality
-                user_items_trimmed = user_items[1:]  # Now has n_items dimensions
-                
-                # Compute Shapley values
-                shapley_values = self.shapley_net(user_items_trimmed.unsqueeze(0)).squeeze()
-                
-                # Update weights for user-item edges
-                item_indices = torch.where(user_items > 0)[0]
-                for item_idx in item_indices:
-                    item_id = item_idx.item()
-                    if item_id > 0:  # Skip index 0
-                        # Get Shapley value for this item (adjust index)
-                        shapley_val = shapley_values[item_id - 1].item()
-                        
-                        # Ensure positive weight
-                        weight = max(shapley_val, 0.1) + 1.0
-                        edge_weights[(user_id, item_id)] = weight
-        
-        return edge_weights
-    
+        # Convert to zero-based
+        mat = train_mat[1:, 1:].to(torch.float32)  # [U, I]
+        # 1) Pretrain DAE to learn value function
+        dae_out = self.dae(mat)                   # [U, 1]
+        # 2) Approximate Shapley
+        n_samples = self.config.get('n_shapley_samples', 5)
+        shap_vals = self.shapley_net.compute_exact_shapley_sample(
+            mat, self.dae.forward, n_samples=n_samples
+        )  # [U, I]
+
+        # Build (u, i) -> weight mapping
+        weights = {}
+        users, items = mat.shape
+        for u in range(users):
+            for i in range(items):
+                if mat[u, i] > 0:
+                    weights[(u, i)] = float(shap_vals[u, i].item())
+        return weights
     def build_hypergraph(self, edge_index: torch.Tensor, edge_weight: torch.Tensor,
                         item_genres: Dict[int, list]) -> None:
         """Build weighted hypergraph with Shapley values
