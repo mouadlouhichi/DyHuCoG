@@ -263,42 +263,56 @@ class CooperativeGameTrainer:
         loss.backward()
         self.dae_optimizer.step()
         
-        return loss.item()
+        return loss.item() 
+   # In src/models/cooperative_game.py, update the train_shapley_step method:
+
     def train_shapley_step(self, user_items: torch.Tensor) -> float:
-        """Single training step for Shapley network
+        """Single training step for Shapley network"""
+        import time
         
-        Args:
-            user_items: User-item interaction matrix [batch_size, n_items + 1]
-            
-        Returns:
-            Loss value
-        """
         # Remove the first column (index 0) which is padding for 1-indexed data
         user_items = user_items[:, 1:]  # Now shape is [batch_size, n_items]
         
         # Predict Shapley values
+        pred_start = time.time()
         pred_shapley = self.shapley_net(user_items)
+        pred_time = time.time() - pred_start
         
         # Compute target Shapley values
+        target_start = time.time()
         with torch.no_grad():
-            # Define value function that works with the trimmed dimensions
-            def value_function(x):
-                # Ensure x has the right shape for the DAE
-                if x.dim() == 1:
-                    x = x.unsqueeze(0)
-                return self.dae.get_coalition_value(x)
-            
+            # Log details for first call
+            if not hasattr(self, '_logged_shapley_details'):
+                self._logged_shapley_details = True
+                n_samples = self.config.get('n_shapley_samples', 10)
+                print(f"  Computing Shapley values with {n_samples} samples per item")
+                print(f"  Batch size: {user_items.shape[0]}")
+                print(f"  Number of items: {user_items.shape[1]}")
+                
             target_shapley = self.shapley_net.compute_exact_shapley_sample(
                 user_items, 
-                value_function,  # Use the wrapper function
+                self.dae.get_coalition_value,
                 n_samples=self.config.get('n_shapley_samples', 10)
             )
+        target_time = time.time() - target_start
         
         # Compute loss
+        loss_start = time.time()
         mask = user_items > 0
         loss = self.shapley_net.compute_shapley_loss(
             pred_shapley, target_shapley, mask
         )
+        loss_time = time.time() - loss_start
+        
+        # Log timing for first few batches
+        if not hasattr(self, '_shapley_batch_count'):
+            self._shapley_batch_count = 0
+        
+        if self._shapley_batch_count < 5:
+            print(f"  Shapley batch {self._shapley_batch_count} timing: "
+                f"pred={pred_time:.3f}s, target={target_time:.3f}s, loss={loss_time:.3f}s")
+        
+        self._shapley_batch_count += 1
         
         # Backward pass
         self.shapley_optimizer.zero_grad()

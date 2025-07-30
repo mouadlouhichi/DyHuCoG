@@ -200,11 +200,18 @@ def main():
     model = create_model(config['model']['name'], dataset, config, device)
     
     # Special initialization for DyHuCoG
+# In scripts/train.py, update the pre-training section:
+
     if config['model']['name'] == 'dyhucog':
         # Pre-train cooperative game components
         train_loader = get_dataloader(dataset, 'train', config)
         
         logger.info("Pre-training cooperative game components...")
+        logger.info(f"  DAE epochs: {config['model']['dae_epochs']}")
+        logger.info(f"  Shapley epochs: {config['model']['shapley_epochs']}")
+        logger.info(f"  Batch size: {config['training']['batch_size']}")
+        logger.info(f"  Number of batches: {len(train_loader)}")
+        
         from src.models.cooperative_game import CooperativeGameTrainer
         
         coop_trainer = CooperativeGameTrainer(
@@ -212,35 +219,90 @@ def main():
         )
         
         # Train DAE
+        logger.info("\nStarting DAE pre-training...")
+        dae_start_time = time.time()
+        
         for epoch in range(config['model']['dae_epochs']):
+            epoch_start_time = time.time()
             total_loss = 0
-            for batch in train_loader:
+            batch_count = 0
+            
+            for batch_idx, batch in enumerate(train_loader):
                 user_items = batch['user_items'].to(device)
                 loss = coop_trainer.train_dae_step(user_items)
                 total_loss += loss
+                batch_count += 1
+                
+                # Log every 10 batches
+                if batch_idx % 10 == 0:
+                    logger.info(f"  DAE Epoch {epoch + 1}, Batch {batch_idx}/{len(train_loader)}: "
+                            f"Loss = {loss:.4f}")
             
-            if (epoch + 1) % 10 == 0:
-                logger.info(f"DAE Epoch {epoch + 1}: Loss = {total_loss/len(train_loader):.4f}")
+            epoch_time = time.time() - epoch_start_time
+            avg_loss = total_loss / batch_count
+            
+            logger.info(f"DAE Epoch {epoch + 1}: Avg Loss = {avg_loss:.4f}, "
+                    f"Time = {epoch_time:.2f}s ({epoch_time/batch_count:.3f}s/batch)")
+        
+        dae_total_time = time.time() - dae_start_time
+        logger.info(f"DAE pre-training completed in {dae_total_time:.2f}s")
         
         # Train Shapley network
+        logger.info("\nStarting Shapley network pre-training...")
+        shapley_start_time = time.time()
+        
         for epoch in range(config['model']['shapley_epochs']):
+            epoch_start_time = time.time()
             total_loss = 0
-            for batch in train_loader:
-                user_items = batch['user_items'].to(device)
-                loss = coop_trainer.train_shapley_step(user_items)
-                total_loss += loss
+            batch_count = 0
             
-            if (epoch + 1) % 10 == 0:
-                logger.info(f"Shapley Epoch {epoch + 1}: Loss = {total_loss/len(train_loader):.4f}")
+            for batch_idx, batch in enumerate(train_loader):
+                user_items = batch['user_items'].to(device)
+                
+                # Log first batch details
+                if epoch == 0 and batch_idx == 0:
+                    logger.info(f"  Shapley batch shape: {user_items.shape}")
+                    logger.info(f"  Non-zero elements per user: {(user_items > 0).sum(dim=1).float().mean():.2f}")
+                
+                batch_start_time = time.time()
+                loss = coop_trainer.train_shapley_step(user_items)
+                batch_time = time.time() - batch_start_time
+                
+                total_loss += loss
+                batch_count += 1
+                
+                # Log every 10 batches with timing
+                if batch_idx % 10 == 0:
+                    logger.info(f"  Shapley Epoch {epoch + 1}, Batch {batch_idx}/{len(train_loader)}: "
+                            f"Loss = {loss:.4f}, Time = {batch_time:.3f}s")
+            
+            epoch_time = time.time() - epoch_start_time
+            avg_loss = total_loss / batch_count
+            
+            logger.info(f"Shapley Epoch {epoch + 1}: Avg Loss = {avg_loss:.4f}, "
+                    f"Time = {epoch_time:.2f}s ({epoch_time/batch_count:.3f}s/batch)")
+        
+        shapley_total_time = time.time() - shapley_start_time
+        logger.info(f"Shapley pre-training completed in {shapley_total_time:.2f}s")
         
         # Update edge weights
-        logger.info("Computing Shapley value edge weights...")
+        logger.info("\nComputing Shapley value edge weights...")
+        weight_start_time = time.time()
         model.edge_weights = model.compute_shapley_weights(dataset.train_mat.to(device))
+        weight_time = time.time() - weight_start_time
+        logger.info(f"Edge weight computation completed in {weight_time:.2f}s")
+        logger.info(f"Number of edge weights: {len(model.edge_weights)}")
         
         # Build weighted hypergraph
+        logger.info("\nBuilding weighted hypergraph...")
+        graph_start_time = time.time()
         edge_index, edge_weight = GraphBuilder.get_edge_list(dataset, model.edge_weights)
         model.build_hypergraph(edge_index.to(device), edge_weight.to(device), dataset.item_genres)
+        graph_time = time.time() - graph_start_time
+        logger.info(f"Hypergraph built in {graph_time:.2f}s")
     
+        total_preprocessing_time = time.time() - dae_start_time
+        logger.info(f"\nTotal DyHuCoG preprocessing time: {total_preprocessing_time:.2f}s")
     # Create trainer
     logger.info("Creating trainer...")
     trainer = Trainer(
