@@ -1,322 +1,115 @@
-"""
-Cooperative Game components for DyHuCoG
-"""
-
 import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Callable
-import numpy as np
-
 
 class CooperativeGameDAE(nn.Module):
-    """Denoising AutoEncoder for cooperative game value function
-    
-    Args:
-        n_items: Number of items
-        hidden_dim: Hidden dimension size
-        dropout: Dropout rate
-    """
-    
-    def __init__(self, n_items: int, hidden_dim: int, dropout: float = 0.1):
+    """Denoising AutoEncoder for cooperative game value function"""
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float = 0.1):
         super().__init__()
-        
-        self.n_items = n_items
-        self.hidden_dim = hidden_dim
-        
-        # Encoder
-        self.encoder = nn.Sequential(
-            nn.Linear(n_items, hidden_dim),
+        self.network = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU()
-        )
-        
-        # Decoder
-        self.decoder = nn.Sequential(
-            nn.Linear(hidden_dim // 2, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, n_items),
+            nn.Linear(hidden_dim, output_dim),
             nn.Sigmoid()
         )
-        
-    def forward(self, x: torch.Tensor, noise_factor: float = 0.2) -> torch.Tensor:
-        """Forward pass with optional noise injection
-        
-        Args:
-            x: Input item vectors [batch_size, n_items]
-            noise_factor: Noise level for denoising
-            
-        Returns:
-            Reconstructed item vectors
-        """
-        # Add noise during training
-        if self.training and noise_factor > 0:
-            noise = torch.randn_like(x) * noise_factor
-            x_noisy = x + noise
-            x_noisy = torch.clamp(x_noisy, 0, 1)
-        else:
-            x_noisy = x
-        
-        # Encode and decode
-        h = self.encoder(x_noisy)
-        out = self.decoder(h)
-        
-        return out
-    
-    def get_coalition_value(self, coalition_vector: torch.Tensor) -> torch.Tensor:
-        """Get value for a coalition (subset of items)
-        
-        Args:
-            coalition_vector: Binary vector indicating coalition membership
-            
-        Returns:
-            Coalition value
-        """
-        with torch.no_grad():
-            reconstructed = self.forward(coalition_vector, noise_factor=0)
-            # Value is the sum of reconstructed probabilities for items in coalition
-            value = (reconstructed * coalition_vector).sum(dim=-1)
-        return value
-    
-    def get_latent_representation(self, x: torch.Tensor) -> torch.Tensor:
-        """Get latent representation from encoder
-        
-        Args:
-            x: Input item vectors
-            
-        Returns:
-            Latent representations
-        """
-        return self.encoder(x)
-class ShapleyValueNetwork(nn.Module):
-    """FastSHAP-style network for Shapley value approximation
-    
-    Args:
-        n_items: Number of items
-        hidden_dim: Hidden dimension size
-        n_samples: Number of samples for Shapley value estimation
-    """
-    
-    def __init__(self, n_items: int, hidden_dim: int, n_samples: int = 10):
-        super().__init__()
-        
-        self.n_items = n_items
-        self.n_samples = n_samples
-        
-        # Deep network for Shapley value estimation
-        self.network = nn.Sequential(
-            nn.Linear(n_items, hidden_dim * 2),
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim * 2),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, n_items)
-        )
-        
-        # Initialize output layer with small weights
-        nn.init.xavier_uniform_(self.network[-1].weight, gain=0.1)
-        
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Estimate Shapley values for all items
-        
-        Args:
-            x: Item interaction vectors [batch_size, n_items]
-            
-        Returns:
-            Shapley values [batch_size, n_items]
-        """
         return self.network(x)
-    
-    def compute_exact_shapley_sample(self, x: torch.Tensor, 
-                                   value_function: Callable,
-                                   n_samples: Optional[int] = None) -> torch.Tensor:
-        """Monte Carlo approximation of Shapley values for training
-        
-        Args:
-            x: Item interaction vectors [batch_size, n_items]
-            value_function: Coalition value function
-            n_samples: Number of Monte Carlo samples
-            
-        Returns:
-            Approximate Shapley values [batch_size, n_items]
+
+class ShapleyValueNetwork(nn.Module):
+    """Light network to predict Shapley values from user features"""
+    def __init__(self, input_dim: int, hidden_dim: int, n_items: int):
+        super().__init__()
+        self.shared = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1)
+        )
+        self.head = nn.Linear(hidden_dim, n_items)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.shared(x)
+        return self.head(h)
+
+    def compute_exact_shapley_sample(
+        self,
+        x: torch.Tensor,
+        value_function: Callable,
+        n_samples: Optional[int] = None
+    ) -> torch.Tensor:
+        """
+        Vectorized Monte Carlo Shapley approximation:
+        - x: [B, M] interaction matrix
+        - value_function: f(batch_x) -> [batch_size] values
+        - n_samples: number of random masks per user
+        Returns: [B, M] approximate Shapley values
         """
         if n_samples is None:
-            n_samples = self.n_samples
-            
-        batch_size = x.shape[0]
-        n_items = x.shape[1]
-        device = x.device
-        shapley_values = torch.zeros_like(x)
-        
-        for b in range(batch_size):
-            user_items = x[b]
-            item_indices = torch.where(user_items > 0)[0]
-            n_user_items = len(item_indices)
-            
-            if n_user_items == 0:
-                continue
-                
-            item_shapley = torch.zeros(n_user_items, device=device)
-            
-            # Monte Carlo sampling
-            for _ in range(n_samples):
-                # Random permutation
-                perm = torch.randperm(n_user_items, device=device)
-                
-                # Compute marginal contributions
-                coalition = torch.zeros(n_items, device=device)
-                prev_value = value_function(coalition.unsqueeze(0)).item()
-                
-                for idx in perm:
-                    item_idx = item_indices[idx]
-                    coalition[item_idx] = 1
-                    curr_value = value_function(coalition.unsqueeze(0)).item()
-                    
-                    marginal = curr_value - prev_value
-                    item_shapley[idx] += marginal / n_samples
-                    
-                    prev_value = curr_value
-            
-            # Assign Shapley values
-            for i, idx in enumerate(item_indices):
-                shapley_values[b, idx] = item_shapley[i]
-                
-        return shapley_values
-    
-    def compute_shapley_loss(self, pred_shapley: torch.Tensor,
-                           target_shapley: torch.Tensor,
-                           mask: torch.Tensor) -> torch.Tensor:
-        """Compute loss for Shapley value prediction
-        
-        Args:
-            pred_shapley: Predicted Shapley values
-            target_shapley: Target Shapley values
-            mask: Mask for valid items
-            
-        Returns:
-            Loss value
-        """
-        # Only compute loss on observed items
-        if mask.sum() > 0:
-            loss = F.mse_loss(pred_shapley[mask], target_shapley[mask])
-        else:
-            loss = torch.tensor(0.0, device=pred_shapley.device)
-            
-        return loss
+            raise ValueError("n_samples must be provided for Shapley sampling")
 
+        B, M = x.shape
+        k = n_samples
+        device = x.device
+
+        # 1) Generate random subset masks: [B, k, M]
+        masks = torch.zeros(B, k, M, device=device)
+        for b in range(B):
+            idxs = torch.where(x[b] > 0)[0]
+            if idxs.numel() == 0:
+                continue
+            n_i = idxs.size(0)
+            # sample random sizes and subsets
+            sizes = torch.randint(0, n_i + 1, (k,), device=device)
+            for s in range(k):
+                perm = idxs[torch.randperm(n_i, device=device)[:sizes[s]]]
+                masks[b, s, perm] = 1.0
+
+        # 2) Compute value for masked and full features
+        x_exp = x.unsqueeze(1).expand(-1, k, -1).reshape(B * k, M)
+        mask_flat = masks.reshape(B * k, M)
+        vals_masked = value_function(x_exp * mask_flat).view(B, k)
+
+        full_vals = value_function(x).view(B, 1)
+
+        # 3) Compute marginal contributions per sample and item
+        #    delta = full_vals - val_masked for each sample
+        deltas = (full_vals - vals_masked) / k          # [B, k]
+        # broadcast to items and weight by mask
+        contrib = deltas.unsqueeze(-1) * masks         # [B, k, M]
+
+        # 4) Average contributions across samples
+        shapley_vals = contrib.mean(dim=1)             # [B, M]
+
+        return shapley_vals
 
 class CooperativeGameTrainer:
-    """Trainer for cooperative game components
-    
-    Args:
-        dae: Cooperative game DAE model
-        shapley_net: Shapley value network
-        config: Training configuration
-    """
-    
-    def __init__(self, dae: CooperativeGameDAE, 
-                 shapley_net: ShapleyValueNetwork,
-                 config: dict):
+    """Trainer for cooperative game components"""
+    def __init__(self, dae: CooperativeGameDAE, shapley_net: ShapleyValueNetwork, config: dict):
         self.dae = dae
         self.shapley_net = shapley_net
         self.config = config
-        
-        # Optimizers
-        self.dae_optimizer = torch.optim.Adam(
-            dae.parameters(), 
-            lr=config.get('lr', 0.001)
-        )
-        
-        self.shapley_optimizer = torch.optim.Adam(
-            shapley_net.parameters(),
-            lr=config.get('lr', 0.001)
-        )
-        
-    def train_dae_step(self, user_items: torch.Tensor) -> float:
-        """Single training step for DAE
-        
-        Args:
-            user_items: User-item interaction matrix [batch_size, n_items + 1]
-            
-        Returns:
-            Loss value
-        """
-        # Remove the first column (index 0) which is padding for 1-indexed data
-        user_items = user_items[:, 1:]  # Now shape is [batch_size, n_items]
-        
-        # Forward pass
-        reconstructed = self.dae(user_items)
-        
-        # Compute reconstruction loss on all items
-        loss = F.binary_cross_entropy(reconstructed, user_items)
-        
-        # Backward pass
-        self.dae_optimizer.zero_grad()
-        loss.backward()
-        self.dae_optimizer.step()
-        
-        return loss.item() 
-   # In src/models/cooperative_game.py, update the train_shapley_step method:
+        self.dae_opt = torch.optim.Adam(dae.parameters(), lr=config['lr'])
+        self.shap_opt = torch.optim.Adam(shapley_net.parameters(), lr=config['lr'])
 
-    def train_shapley_step(self, user_items: torch.Tensor) -> float:
-        """Single training step for Shapley network"""
-        
-        # Remove the first column (index 0) which is padding for 1-indexed data
-        user_items = user_items[:, 1:]  # Now shape is [batch_size, n_items]
-        
-        # Predict Shapley values
-        pred_start = time.time()
-        pred_shapley = self.shapley_net(user_items)
-        pred_time = time.time() - pred_start
-        
-        # Compute target Shapley values
-        target_start = time.time()
+    def pretrain_shapley(self, user_items: torch.Tensor):
+        """Run one epoch of Shapley pretraining"""
+        n_samples = self.config.get('n_shapley_samples', 5)
+        batch = user_items[:, 1:]  # remove padding
+
+        # 1) exact shapley via vectorized sampling
         with torch.no_grad():
-            # Log details for first call
-            if not hasattr(self, '_logged_shapley_details'):
-                self._logged_shapley_details = True
-                n_samples = self.config.get('n_shapley_samples', 10)
-                print(f"  Computing Shapley values with {n_samples} samples per item")
-                print(f"  Batch size: {user_items.shape[0]}")
-                print(f"  Number of items: {user_items.shape[1]}")
-                
-            target_shapley = self.shapley_net.compute_exact_shapley_sample(
-                user_items, 
-                self.dae.get_coalition_value,
-                n_samples=self.config.get('n_shapley_samples', 10)
+            target = self.shapley_net.compute_exact_shapley_sample(
+                batch, self.dae.forward, n_samples=n_samples
             )
-        target_time = time.time() - target_start
-        
-        # Compute loss
-        loss_start = time.time()
-        mask = user_items > 0
-        loss = self.shapley_net.compute_shapley_loss(
-            pred_shapley, target_shapley, mask
-        )
-        loss_time = time.time() - loss_start
-        
-        # Log timing for first few batches
-        if not hasattr(self, '_shapley_batch_count'):
-            self._shapley_batch_count = 0
-        
-        if self._shapley_batch_count < 5:
-            print(f"  Shapley batch {self._shapley_batch_count} timing: "
-                f"pred={pred_time:.3f}s, target={target_time:.3f}s, loss={loss_time:.3f}s")
-        
-        self._shapley_batch_count += 1
-        
-        # Backward pass
-        self.shapley_optimizer.zero_grad()
+
+        # 2) predict from shared features
+        self.shap_opt.zero_grad()
+        shared = self.shapley_net.shared(batch)
+        pred = self.shapley_net.head(shared)
+        loss = F.mse_loss(pred, target)
         loss.backward()
-        self.shapley_optimizer.step()
-        
+        self.shap_opt.step()
         return loss.item()
