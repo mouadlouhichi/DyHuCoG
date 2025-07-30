@@ -28,6 +28,10 @@ class BPRDataset(Dataset):
             
         self.n_samples = len(self.users)
         
+        # Store train_mat as CPU tensor for worker process access
+        self.train_mat_cpu = dataset.train_mat.cpu() if hasattr(dataset.train_mat, 'cpu') else dataset.train_mat
+        self.n_items = dataset.n_items
+        
     def __len__(self) -> int:
         return self.n_samples
     
@@ -43,9 +47,9 @@ class BPRDataset(Dataset):
         # Sample negative items
         neg_items = []
         for _ in range(self.n_neg_samples):
-            neg_item = np.random.randint(1, self.dataset.n_items + 1)
-            while self.dataset.train_mat[user, neg_item] > 0:
-                neg_item = np.random.randint(1, self.dataset.n_items + 1)
+            neg_item = np.random.randint(1, self.n_items + 1)
+            while self.train_mat_cpu[user, neg_item] > 0:
+                neg_item = np.random.randint(1, self.n_items + 1)
             neg_items.append(neg_item)
         
         return {
@@ -53,7 +57,7 @@ class BPRDataset(Dataset):
             'pos_items': torch.tensor(pos_item, dtype=torch.long),
             'neg_items': torch.tensor(neg_items[0] if self.n_neg_samples == 1 else neg_items,
                                     dtype=torch.long),
-            'user_items': self.dataset.train_mat[user]  # For cooperative game training
+            'user_items': self.train_mat_cpu[user]  # Return CPU tensor
         }
 
 
@@ -69,13 +73,16 @@ class UniformSampleDataset(Dataset):
         self.dataset = dataset
         self.phase = phase
         
-        # Get all users with interactions in this phase
+        # Get evaluation data
         if phase == 'val':
-            self.users = list(dataset.val_dict.keys())
+            self.eval_dict = dataset.val_dict
         elif phase == 'test':
-            self.users = list(dataset.test_dict.keys())
+            self.eval_dict = dataset.test_dict
         else:
             raise ValueError(f"Invalid phase: {phase}")
+            
+        # Get all users with interactions in this phase
+        self.users = list(self.eval_dict.keys())
             
     def __len__(self) -> int:
         return len(self.users)
@@ -132,7 +139,7 @@ def get_dataloader(dataset, split: str, config: Dict, **kwargs) -> DataLoader:
             train_dataset,
             batch_size=config['training']['batch_size'],
             shuffle=True,
-            num_workers=config['training'].get('num_workers', 4),
+            num_workers=config['training'].get('num_workers', 0),  # Default to 0 for Colab
             pin_memory=True,
             drop_last=True,
             **kwargs
@@ -146,7 +153,7 @@ def get_dataloader(dataset, split: str, config: Dict, **kwargs) -> DataLoader:
             eval_dataset,
             batch_size=config['evaluation'].get('eval_batch_size', 512),
             shuffle=False,
-            num_workers=config['training'].get('num_workers', 4),
+            num_workers=config['training'].get('num_workers', 0),  # Default to 0 for Colab
             pin_memory=True,
             **kwargs
         )

@@ -182,11 +182,9 @@ class RecommenderDataset:
                    f"Val: {len(self.val_ratings)}, Test: {len(self.test_ratings)}")
     
     def _build_interaction_matrices(self):
-        """Build sparse interaction matrices"""
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        # Train matrix
-        self.train_mat = torch.zeros((self.n_users + 1, self.n_items + 1), device=device)
+        """Build sparse interaction matrices - FIXED to keep on CPU"""
+        # Train matrix - KEEP ON CPU for DataLoader compatibility
+        self.train_mat = torch.zeros((self.n_users + 1, self.n_items + 1))
         for _, row in self.train_ratings.iterrows():
             self.train_mat[row['user'], row['item']] = 1
             
