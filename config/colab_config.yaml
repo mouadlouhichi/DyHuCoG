@@ -34,7 +34,7 @@ training:
   early_stopping_patience: 20
   eval_every: 10
   save_best: true
-  num_workers: 4  # Set to 0 for Google Colab
+  num_workers: 0  # Set to 0 for Google Colab
   device: cuda
 
 # Evaluation settings
