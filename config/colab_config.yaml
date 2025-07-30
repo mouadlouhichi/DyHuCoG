@@ -16,19 +16,19 @@ model:
   n_layers: 3
   dropout: 0.1
   
-  # DyHuCoG specific
+  # DyHuCoG specific - Optimized for speed
   dae_hidden: 128
-  dae_epochs: 10
+  dae_epochs: 5      # Reduced from 10
   shapley_hidden: 128
-  shapley_epochs: 10
-  n_shapley_samples: 5
+  shapley_epochs: 5   # Reduced from 10
+  n_shapley_samples: 3  # Reduced from 5
   use_attention: true
   use_genres: true
 
 # Training settings
 training:
   epochs: 20
-  batch_size: 256
+  batch_size: 128    # Reduced from 256 for Shapley computation
   learning_rate: 0.001
   weight_decay: 1e-4
   early_stopping_patience: 20

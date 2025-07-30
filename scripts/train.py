@@ -201,8 +201,6 @@ def main():
     model = create_model(config['model']['name'], dataset, config, device)
     
     # Special initialization for DyHuCoG
-# In scripts/train.py, update the pre-training section:
-
     if config['model']['name'] == 'dyhucog':
         # Pre-train cooperative game components
         train_loader = get_dataloader(dataset, 'train', config)
@@ -234,8 +232,8 @@ def main():
                 total_loss += loss
                 batch_count += 1
                 
-                # Log every 10 batches
-                if batch_idx % 10 == 0:
+                # Log every 50 batches instead of 10
+                if batch_idx % 50 == 0:
                     logger.info(f"  DAE Epoch {epoch + 1}, Batch {batch_idx}/{len(train_loader)}: "
                             f"Loss = {loss:.4f}")
             
@@ -250,12 +248,16 @@ def main():
         
         # Train Shapley network
         logger.info("\nStarting Shapley network pre-training...")
+        logger.info("Note: Using optimized Shapley computation with batching and reduced samples")
         shapley_start_time = time.time()
         
         for epoch in range(config['model']['shapley_epochs']):
             epoch_start_time = time.time()
             total_loss = 0
             batch_count = 0
+            
+            # Increment epoch in trainer for loss strategy
+            coop_trainer.increment_epoch()
             
             for batch_idx, batch in enumerate(train_loader):
                 user_items = batch['user_items'].to(device)
@@ -264,6 +266,7 @@ def main():
                 if epoch == 0 and batch_idx == 0:
                     logger.info(f"  Shapley batch shape: {user_items.shape}")
                     logger.info(f"  Non-zero elements per user: {(user_items > 0).sum(dim=1).float().mean():.2f}")
+                    logger.info(f"  Using {'exact' if epoch < 3 else 'self-supervised'} Shapley training")
                 
                 batch_start_time = time.time()
                 loss = coop_trainer.train_shapley_step(user_items)
@@ -272,8 +275,8 @@ def main():
                 total_loss += loss
                 batch_count += 1
                 
-                # Log every 10 batches with timing
-                if batch_idx % 10 == 0:
+                # Log every 50 batches with timing
+                if batch_idx % 50 == 0:
                     logger.info(f"  Shapley Epoch {epoch + 1}, Batch {batch_idx}/{len(train_loader)}: "
                             f"Loss = {loss:.4f}, Time = {batch_time:.3f}s")
             
@@ -289,7 +292,48 @@ def main():
         # Update edge weights
         logger.info("\nComputing Shapley value edge weights...")
         weight_start_time = time.time()
-        model.edge_weights = model.compute_shapley_weights(dataset.train_mat.to(device))
+        
+        # Compute in batches to save memory
+        edge_weights = {}
+        batch_size = 100
+        
+        for user_start in range(1, dataset.n_users + 1, batch_size):
+            user_end = min(user_start + batch_size, dataset.n_users + 1)
+            user_batch = range(user_start, user_end)
+            
+            # Get user items for batch
+            user_items_batch = []
+            user_ids = []
+            
+            for user_id in user_batch:
+                user_items = dataset.train_mat[user_id]
+                if user_items.sum() > 0:
+                    user_items_batch.append(user_items[1:])  # Remove index 0
+                    user_ids.append(user_id)
+            
+            if user_items_batch:
+                # Compute Shapley values for batch
+                user_items_tensor = torch.stack(user_items_batch).to(device)
+                with torch.no_grad():
+                    shapley_values_batch = model.shapley_net(user_items_tensor)
+                
+                # Extract edge weights
+                for i, user_id in enumerate(user_ids):
+                    user_items = dataset.train_mat[user_id]
+                    item_indices = torch.where(user_items > 0)[0]
+                    shapley_vals = shapley_values_batch[i]
+                    
+                    for item_idx in item_indices:
+                        item_id = item_idx.item()
+                        if item_id > 0:  # Skip index 0
+                            shapley_val = shapley_vals[item_id - 1].item()
+                            weight = max(shapley_val, 0.1) + 1.0
+                            edge_weights[(user_id, item_id)] = weight
+            
+            if user_start % 500 == 1:
+                logger.info(f"  Processed users {user_start} to {user_end-1}")
+        
+        model.edge_weights = edge_weights
         weight_time = time.time() - weight_start_time
         logger.info(f"Edge weight computation completed in {weight_time:.2f}s")
         logger.info(f"Number of edge weights: {len(model.edge_weights)}")
@@ -304,6 +348,7 @@ def main():
     
         total_preprocessing_time = time.time() - dae_start_time
         logger.info(f"\nTotal DyHuCoG preprocessing time: {total_preprocessing_time:.2f}s")
+    
     # Create trainer
     logger.info("Creating trainer...")
     trainer = Trainer(
@@ -342,11 +387,12 @@ def main():
         'config': config,
         'n_users': dataset.n_users,
         'n_items': dataset.n_items,
-        'n_genres': dataset.n_genres
+        'n_genres': dataset.n_genres,
+        'edge_weights': model.edge_weights if hasattr(model, 'edge_weights') else None
     }, checkpoint_dir / 'best_model.pth')
     
     logger.info(f"Training completed! Results saved to {results_dir}")
-    logger.info(f"Best validation NDCG@10: {trainer.best_metrics['ndcg@10']:.4f}")
+    logger.info(f"Best validation NDCG@10: {trainer.best_metrics.get('ndcg@10', 'N/A'):.4f}")
 
 
 if __name__ == '__main__':

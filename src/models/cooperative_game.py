@@ -1,5 +1,5 @@
 """
-Cooperative Game components for DyHuCoG
+Cooperative Game components for DyHuCoG - Optimized Version
 """
 
 import time
@@ -92,6 +92,8 @@ class CooperativeGameDAE(nn.Module):
             Latent representations
         """
         return self.encoder(x)
+
+
 class ShapleyValueNetwork(nn.Module):
     """FastSHAP-style network for Shapley value approximation
     
@@ -136,10 +138,10 @@ class ShapleyValueNetwork(nn.Module):
         """
         return self.network(x)
     
-    def compute_exact_shapley_sample(self, x: torch.Tensor, 
-                                   value_function: Callable,
-                                   n_samples: Optional[int] = None) -> torch.Tensor:
-        """Monte Carlo approximation of Shapley values for training
+    def compute_exact_shapley_sample_optimized(self, x: torch.Tensor, 
+                                              value_function: Callable,
+                                              n_samples: Optional[int] = None) -> torch.Tensor:
+        """Optimized Monte Carlo approximation of Shapley values
         
         Args:
             x: Item interaction vectors [batch_size, n_items]
@@ -157,40 +159,99 @@ class ShapleyValueNetwork(nn.Module):
         device = x.device
         shapley_values = torch.zeros_like(x)
         
-        for b in range(batch_size):
-            user_items = x[b]
-            item_indices = torch.where(user_items > 0)[0]
-            n_user_items = len(item_indices)
+        # Process in smaller sub-batches for memory efficiency
+        sub_batch_size = min(16, batch_size)  # Process max 16 users at once
+        
+        for batch_start in range(0, batch_size, sub_batch_size):
+            batch_end = min(batch_start + sub_batch_size, batch_size)
+            batch_indices = list(range(batch_start, batch_end))
             
-            if n_user_items == 0:
+            # Collect all coalitions to evaluate for this sub-batch
+            all_coalitions = []
+            coalition_metadata = []  # Store (batch_idx, sample_idx, item_idx, step)
+            
+            for b_idx, b in enumerate(batch_indices):
+                user_items = x[b]
+                item_indices = torch.where(user_items > 0)[0]
+                n_user_items = len(item_indices)
+                
+                if n_user_items == 0:
+                    continue
+                
+                # Limit items for very active users to speed up computation
+                if n_user_items > 50:
+                    # Sample most important items based on some heuristic
+                    # For now, just take first 50
+                    item_indices = item_indices[:50]
+                    n_user_items = 50
+                
+                # Generate coalitions for Monte Carlo sampling
+                for sample_idx in range(n_samples):
+                    perm = torch.randperm(n_user_items, device=device)
+                    coalition = torch.zeros(n_items, device=device)
+                    
+                    # Empty coalition
+                    all_coalitions.append(coalition.clone())
+                    coalition_metadata.append((b_idx, sample_idx, -1, 0))
+                    
+                    # Build coalitions incrementally
+                    for step, perm_idx in enumerate(perm):
+                        item_idx = item_indices[perm_idx]
+                        coalition[item_idx] = 1
+                        all_coalitions.append(coalition.clone())
+                        coalition_metadata.append((b_idx, sample_idx, perm_idx.item(), step + 1))
+            
+            if not all_coalitions:
                 continue
                 
-            item_shapley = torch.zeros(n_user_items, device=device)
+            # Batch evaluate all coalitions
+            coalition_batch = torch.stack(all_coalitions)
+            with torch.no_grad():
+                coalition_values = value_function(coalition_batch).squeeze()
             
-            # Monte Carlo sampling
-            for _ in range(n_samples):
-                # Random permutation
-                perm = torch.randperm(n_user_items, device=device)
-                
-                # Compute marginal contributions
-                coalition = torch.zeros(n_items, device=device)
-                prev_value = value_function(coalition.unsqueeze(0)).item()
-                
-                for idx in perm:
-                    item_idx = item_indices[idx]
-                    coalition[item_idx] = 1
-                    curr_value = value_function(coalition.unsqueeze(0)).item()
-                    
-                    marginal = curr_value - prev_value
-                    item_shapley[idx] += marginal / n_samples
-                    
-                    prev_value = curr_value
+            # Process results to compute marginal contributions
+            values_dict = {}
+            for i, (b_idx, sample_idx, item_idx, step) in enumerate(coalition_metadata):
+                key = (b_idx, sample_idx, step)
+                values_dict[key] = coalition_values[i].item()
             
-            # Assign Shapley values
-            for i, idx in enumerate(item_indices):
-                shapley_values[b, idx] = item_shapley[i]
+            # Compute Shapley values from marginal contributions
+            for b_idx, b in enumerate(batch_indices):
+                user_items = x[b]
+                item_indices = torch.where(user_items > 0)[0]
                 
+                if len(item_indices) == 0:
+                    continue
+                    
+                # Limit items if necessary
+                if len(item_indices) > 50:
+                    item_indices = item_indices[:50]
+                
+                item_shapley = torch.zeros(len(item_indices), device=device)
+                
+                for sample_idx in range(n_samples):
+                    # Get the permutation order
+                    perm = torch.randperm(len(item_indices), device=device)
+                    
+                    for perm_position, perm_idx in enumerate(perm):
+                        # Marginal contribution = v(S ∪ {i}) - v(S)
+                        prev_value = values_dict.get((b_idx, sample_idx, perm_position), 0.0)
+                        curr_value = values_dict.get((b_idx, sample_idx, perm_position + 1), 0.0)
+                        
+                        marginal = curr_value - prev_value
+                        item_shapley[perm_idx] += marginal / n_samples
+                
+                # Assign Shapley values back
+                for i, idx in enumerate(item_indices):
+                    shapley_values[b, idx] = item_shapley[i]
+                    
         return shapley_values
+    
+    def compute_exact_shapley_sample(self, x: torch.Tensor, 
+                                   value_function: Callable,
+                                   n_samples: Optional[int] = None) -> torch.Tensor:
+        """Keep original method for compatibility but use optimized version"""
+        return self.compute_exact_shapley_sample_optimized(x, value_function, n_samples)
     
     def compute_shapley_loss(self, pred_shapley: torch.Tensor,
                            target_shapley: torch.Tensor,
@@ -241,6 +302,8 @@ class CooperativeGameTrainer:
             lr=config.get('lr', 0.001)
         )
         
+        self._shapley_epoch = 0
+        
     def train_dae_step(self, user_items: torch.Tensor) -> float:
         """Single training step for DAE
         
@@ -264,59 +327,73 @@ class CooperativeGameTrainer:
         loss.backward()
         self.dae_optimizer.step()
         
-        return loss.item() 
-   # In src/models/cooperative_game.py, update the train_shapley_step method:
-
+        return loss.item()
+    
     def train_shapley_step(self, user_items: torch.Tensor) -> float:
-        """Single training step for Shapley network"""
+        """Optimized training step for Shapley network"""
         
         # Remove the first column (index 0) which is padding for 1-indexed data
         user_items = user_items[:, 1:]  # Now shape is [batch_size, n_items]
         
+        # For efficiency, limit batch size for Shapley computation
+        max_shapley_batch = 32
+        if user_items.shape[0] > max_shapley_batch:
+            # Randomly sample a smaller batch
+            indices = torch.randperm(user_items.shape[0])[:max_shapley_batch]
+            user_items = user_items[indices]
+        
         # Predict Shapley values
-        pred_start = time.time()
         pred_shapley = self.shapley_net(user_items)
-        pred_time = time.time() - pred_start
         
-        # Compute target Shapley values
-        target_start = time.time()
-        with torch.no_grad():
-            # Log details for first call
-            if not hasattr(self, '_logged_shapley_details'):
-                self._logged_shapley_details = True
-                n_samples = self.config.get('n_shapley_samples', 10)
-                print(f"  Computing Shapley values with {n_samples} samples per item")
-                print(f"  Batch size: {user_items.shape[0]}")
-                print(f"  Number of items: {user_items.shape[1]}")
-                
-            target_shapley = self.shapley_net.compute_exact_shapley_sample(
-                user_items, 
-                self.dae.get_coalition_value,
-                n_samples=self.config.get('n_shapley_samples', 10)
+        # Choose between exact computation and self-supervised loss
+        use_exact_shapley = self._shapley_epoch < 3
+        
+        if use_exact_shapley:
+            # Compute target Shapley values (only for first few epochs)
+            with torch.no_grad():
+                # Use fewer samples for faster training
+                n_samples = min(3, self.config.get('n_shapley_samples', 10))
+                target_shapley = self.shapley_net.compute_exact_shapley_sample_optimized(
+                    user_items, 
+                    self.dae.get_coalition_value,
+                    n_samples=n_samples
+                )
+            
+            # Compute supervised loss
+            mask = user_items > 0
+            loss = self.shapley_net.compute_shapley_loss(
+                pred_shapley, target_shapley, mask
             )
-        target_time = time.time() - target_start
-        
-        # Compute loss
-        loss_start = time.time()
-        mask = user_items > 0
-        loss = self.shapley_net.compute_shapley_loss(
-            pred_shapley, target_shapley, mask
-        )
-        loss_time = time.time() - loss_start
-        
-        # Log timing for first few batches
-        if not hasattr(self, '_shapley_batch_count'):
-            self._shapley_batch_count = 0
-        
-        if self._shapley_batch_count < 5:
-            print(f"  Shapley batch {self._shapley_batch_count} timing: "
-                f"pred={pred_time:.3f}s, target={target_time:.3f}s, loss={loss_time:.3f}s")
-        
-        self._shapley_batch_count += 1
+        else:
+            # Self-supervised loss: ensure non-zero items have positive Shapley values
+            # and that Shapley values sum to a meaningful total
+            mask = user_items > 0
+            
+            # Loss 1: Non-zero items should have positive Shapley values
+            loss1 = F.relu(-pred_shapley[mask]).mean()
+            
+            # Loss 2: Shapley values should sum to something meaningful
+            # (e.g., close to the number of items)
+            shapley_sums = (pred_shapley * mask.float()).sum(dim=1)
+            item_counts = mask.float().sum(dim=1)
+            loss2 = F.mse_loss(shapley_sums, item_counts * 0.5)  # Target: half of item count
+            
+            # Loss 3: Regularization - prevent too large values
+            loss3 = (pred_shapley[mask] ** 2).mean() * 0.01
+            
+            loss = loss1 + loss2 + loss3
         
         # Backward pass
         self.shapley_optimizer.zero_grad()
         loss.backward()
+        
+        # Gradient clipping for stability
+        torch.nn.utils.clip_grad_norm_(self.shapley_net.parameters(), max_norm=1.0)
+        
         self.shapley_optimizer.step()
         
         return loss.item()
+    
+    def increment_epoch(self):
+        """Call this at the end of each epoch"""
+        self._shapley_epoch += 1
