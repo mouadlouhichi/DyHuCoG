@@ -24,21 +24,18 @@ class CooperativeGameDAE(nn.Module):
         self.n_items = n_items
         self.hidden_dim = hidden_dim
         
-        # Encoder with batch normalization
+        # Encoder
         self.encoder = nn.Sequential(
             nn.Linear(n_items, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.BatchNorm1d(hidden_dim // 2),
             nn.ReLU()
         )
         
         # Decoder
         self.decoder = nn.Sequential(
             nn.Linear(hidden_dim // 2, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, n_items),
@@ -57,9 +54,9 @@ class CooperativeGameDAE(nn.Module):
         """
         # Add noise during training
         if self.training and noise_factor > 0:
-            # Add dropout noise instead of Gaussian noise for binary data
-            noise_mask = torch.bernoulli(torch.ones_like(x) * (1 - noise_factor))
-            x_noisy = x * noise_mask
+            noise = torch.randn_like(x) * noise_factor
+            x_noisy = x + noise
+            x_noisy = torch.clamp(x_noisy, 0, 1)
         else:
             x_noisy = x
         
@@ -68,6 +65,32 @@ class CooperativeGameDAE(nn.Module):
         out = self.decoder(h)
         
         return out
+    
+    def get_coalition_value(self, coalition_vector: torch.Tensor) -> torch.Tensor:
+        """Get value for a coalition (subset of items)
+        
+        Args:
+            coalition_vector: Binary vector indicating coalition membership
+            
+        Returns:
+            Coalition value
+        """
+        with torch.no_grad():
+            reconstructed = self.forward(coalition_vector, noise_factor=0)
+            # Value is the sum of reconstructed probabilities for items in coalition
+            value = (reconstructed * coalition_vector).sum(dim=-1)
+        return value
+    
+    def get_latent_representation(self, x: torch.Tensor) -> torch.Tensor:
+        """Get latent representation from encoder
+        
+        Args:
+            x: Input item vectors
+            
+        Returns:
+            Latent representations
+        """
+        return self.encoder(x)
 class ShapleyValueNetwork(nn.Module):
     """FastSHAP-style network for Shapley value approximation
     
@@ -232,13 +255,8 @@ class CooperativeGameTrainer:
         # Forward pass
         reconstructed = self.dae(user_items)
         
-        # Compute reconstruction loss on ALL items, not just observed ones
-        # This encourages the model to predict 0 for unobserved items
+        # Compute reconstruction loss on all items
         loss = F.binary_cross_entropy(reconstructed, user_items)
-        
-        # Alternatively, you can use a weighted loss to give more importance to observed items
-        # pos_weight = (user_items == 0).sum() / (user_items == 1).sum()
-        # loss = F.binary_cross_entropy_with_logits(reconstructed, user_items, pos_weight=pos_weight)
         
         # Backward pass
         self.dae_optimizer.zero_grad()
@@ -263,9 +281,16 @@ class CooperativeGameTrainer:
         
         # Compute target Shapley values
         with torch.no_grad():
+            # Define value function that works with the trimmed dimensions
+            def value_function(x):
+                # Ensure x has the right shape for the DAE
+                if x.dim() == 1:
+                    x = x.unsqueeze(0)
+                return self.dae.get_coalition_value(x)
+            
             target_shapley = self.shapley_net.compute_exact_shapley_sample(
                 user_items, 
-                self.dae.get_coalition_value,
+                value_function,  # Use the wrapper function
                 n_samples=self.config.get('n_shapley_samples', 10)
             )
         
