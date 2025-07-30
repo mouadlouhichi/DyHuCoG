@@ -57,7 +57,7 @@ class Trainer:
         self.optimizer = torch.optim.Adam(
             model.parameters(),
             lr=config['training']['learning_rate'],
-            weight_decay=config['training']['weight_decay']
+            weight_decay=float(config['training']['weight_decay'])  # Convert string to float
         )
         
         # Learning rate scheduler
@@ -116,7 +116,8 @@ class Trainer:
                     self.best_metrics = {
                         'epoch': epoch,
                         'val_metrics': val_metrics,
-                        'test_metrics': test_metrics
+                        'test_metrics': test_metrics,
+                        'ndcg@10': current_val_ndcg  # Add this for compatibility
                     }
                     self.patience_counter = 0
                     
@@ -236,7 +237,7 @@ class Trainer:
         for param in self.model.parameters():
             reg_loss += param.norm(2).pow(2)
         
-        return self.config['training']['weight_decay'] * reg_loss
+        return float(self.config['training']['weight_decay']) * reg_loss
     
     def evaluate(self, split: str, epoch: int) -> Dict:
         """Evaluate model on validation or test set

@@ -73,7 +73,7 @@ class DyHuCoG(nn.Module):
         """Compute Shapley value-based edge weights
         
         Args:
-            train_mat: User-item interaction matrix
+            train_mat: User-item interaction matrix [n_users+1, n_items+1] (1-indexed)
             
         Returns:
             Dictionary mapping (user, item) pairs to edge weights
@@ -87,18 +87,23 @@ class DyHuCoG(nn.Module):
                 if user_items.sum() == 0:
                     continue
                 
+                # Remove the first element (index 0) for proper dimensionality
+                user_items_trimmed = user_items[1:]  # Now has n_items dimensions
+                
                 # Compute Shapley values
-                shapley_values = self.shapley_net(user_items.unsqueeze(0)).squeeze()
+                shapley_values = self.shapley_net(user_items_trimmed.unsqueeze(0)).squeeze()
                 
                 # Update weights for user-item edges
                 item_indices = torch.where(user_items > 0)[0]
                 for item_idx in item_indices:
-                    item_id = item_idx.item() + 1
-                    weight = shapley_values[item_idx].item()
-                    
-                    # Ensure positive weight
-                    weight = max(weight, 0.1) + 1.0
-                    edge_weights[(user_id, item_id)] = weight
+                    item_id = item_idx.item()
+                    if item_id > 0:  # Skip index 0
+                        # Get Shapley value for this item (adjust index)
+                        shapley_val = shapley_values[item_id - 1].item()
+                        
+                        # Ensure positive weight
+                        weight = max(shapley_val, 0.1) + 1.0
+                        edge_weights[(user_id, item_id)] = weight
         
         return edge_weights
     

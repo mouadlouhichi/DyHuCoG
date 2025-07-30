@@ -246,11 +246,14 @@ class CooperativeGameTrainer:
         """Single training step for DAE
         
         Args:
-            user_items: User-item interaction matrix
+            user_items: User-item interaction matrix [batch_size, n_items + 1]
             
         Returns:
             Loss value
         """
+        # Remove the first column (index 0) which is padding for 1-indexed data
+        user_items = user_items[:, 1:]  # Now shape is [batch_size, n_items]
+        
         # Forward pass
         reconstructed = self.dae(user_items)
         
@@ -275,11 +278,14 @@ class CooperativeGameTrainer:
         """Single training step for Shapley network
         
         Args:
-            user_items: User-item interaction matrix
+            user_items: User-item interaction matrix [batch_size, n_items + 1]
             
         Returns:
             Loss value
         """
+        # Remove the first column (index 0) which is padding for 1-indexed data
+        user_items = user_items[:, 1:]  # Now shape is [batch_size, n_items]
+        
         # Predict Shapley values
         pred_shapley = self.shapley_net(user_items)
         
