@@ -257,15 +257,13 @@ class CooperativeGameTrainer:
         # Forward pass
         reconstructed = self.dae(user_items)
         
-        # Compute loss only on observed items
-        mask = user_items > 0
-        if mask.sum() > 0:
-            loss = F.binary_cross_entropy(
-                reconstructed[mask], 
-                user_items[mask]
-            )
-        else:
-            loss = torch.tensor(0.0, device=user_items.device)
+        # Compute reconstruction loss on ALL items, not just observed ones
+        # This encourages the model to predict 0 for unobserved items
+        loss = F.binary_cross_entropy(reconstructed, user_items)
+        
+        # Alternatively, you can use a weighted loss to give more importance to observed items
+        # pos_weight = (user_items == 0).sum() / (user_items == 1).sum()
+        # loss = F.binary_cross_entropy_with_logits(reconstructed, user_items, pos_weight=pos_weight)
         
         # Backward pass
         self.dae_optimizer.zero_grad()
@@ -273,7 +271,6 @@ class CooperativeGameTrainer:
         self.dae_optimizer.step()
         
         return loss.item()
-    
     def train_shapley_step(self, user_items: torch.Tensor) -> float:
         """Single training step for Shapley network
         
