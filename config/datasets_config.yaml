@@ -1,0 +1,120 @@
+# Dataset configurations for experiments
+
+datasets:
+  ml-100k:
+    name: "MovieLens-100K"
+    type: "movie"
+    path: "data/ml-100k"
+    diversity_level: "medium"
+    sparsity: 0.9369
+    n_users: 943
+    n_items: 1682
+    test_size: 0.2
+    val_size: 0.1
+    min_interactions: 5
+    has_features: true
+    feature_type: "genres"
+    
+  ml-1m:
+    name: "MovieLens-1M"
+    type: "movie"
+    path: "data/ml-1m"
+    diversity_level: "medium"
+    sparsity: 0.9575
+    n_users: 6040
+    n_items: 3952
+    test_size: 0.2
+    val_size: 0.1
+    min_interactions: 10
+    has_features: true
+    feature_type: "genres"
+    
+  yelp2018:
+    name: "Yelp-2018"
+    type: "business"
+    path: "data/yelp2018"
+    diversity_level: "high"
+    sparsity: 0.9985
+    n_users: 31668
+    n_items: 38048
+    test_size: 0.2
+    val_size: 0.1
+    min_interactions: 10
+    has_features: true
+    feature_type: "categories"
+    
+  gowalla:
+    name: "Gowalla"
+    type: "location"
+    path: "data/gowalla"
+    diversity_level: "very_high"
+    sparsity: 0.9991
+    n_users: 29858
+    n_items: 40981
+    test_size: 0.2
+    val_size: 0.1
+    min_interactions: 10
+    has_features: false
+    feature_type: null
+    
+  amazon-electronics:
+    name: "Amazon-Electronics"
+    type: "product"
+    path: "data/amazon-electronics"
+    diversity_level: "high"
+    sparsity: 0.9993
+    n_users: 192403
+    n_items: 63001
+    test_size: 0.2
+    val_size: 0.1
+    min_interactions: 5
+    has_features: true
+    feature_type: "categories"
+
+# Diversity regime definitions
+diversity_regimes:
+  low:
+    description: "Low diversity - Popular items dominate"
+    gini_threshold: 0.7
+    coverage_threshold: 0.2
+    
+  medium:
+    description: "Medium diversity - Balanced popularity"
+    gini_threshold: 0.5
+    coverage_threshold: 0.4
+    
+  high:
+    description: "High diversity - Long-tail friendly"
+    gini_threshold: 0.3
+    coverage_threshold: 0.6
+    
+  very_high:
+    description: "Very high diversity - Extreme long-tail"
+    gini_threshold: 0.2
+    coverage_threshold: 0.8
+
+# Cold-start protocols
+cold_start_protocols:
+  user_cold_start:
+    description: "New users with no interactions"
+    test_users: "new"
+    min_train_interactions: 0
+    max_train_interactions: 0
+    
+  user_few_shot:
+    description: "Users with few interactions"
+    test_users: "existing"
+    min_train_interactions: 1
+    max_train_interactions: 5
+    
+  item_cold_start:
+    description: "New items with no interactions"
+    test_items: "new"
+    min_train_interactions: 0
+    max_train_interactions: 0
+    
+  item_few_shot:
+    description: "Items with few interactions"
+    test_items: "existing"
+    min_train_interactions: 1
+    max_train_interactions: 5

@@ -21,9 +21,20 @@ from src.data.dataloader import get_dataloader
 from src.models.dyhucog import DyHuCoG
 from src.models.lightgcn import LightGCN
 from src.models.ngcf import NGCF
+from src.models.sgl import SGL
+from src.models.simgcl import SimGCL
+from src.models.hccf import HCCF
 from src.utils.trainer import Trainer
 from src.utils.logger import setup_logger
 from src.utils.graph_builder import GraphBuilder
+
+# Import extended datasets
+try:
+    from src.data.yelp_dataset import YelpDataset, GowallaDataset, AmazonElectronicsDataset
+    EXTENDED_DATASETS = True
+except ImportError:
+    EXTENDED_DATASETS = False
+    print("Warning: Extended datasets not available")
 
 
 def parse_args():
@@ -31,9 +42,9 @@ def parse_args():
     
     # Basic arguments
     parser.add_argument('--dataset', type=str, default='ml-100k',
-                       help='Dataset name: ml-100k, ml-1m, amazon-book')
+                       help='Dataset name: ml-100k, ml-1m, amazon-book, yelp2018, gowalla, amazon-electronics')
     parser.add_argument('--model', type=str, default='dyhucog',
-                       help='Model name: dyhucog, lightgcn, ngcf')
+                       help='Model name: dyhucog, lightgcn, ngcf, sgl, simgcl, hccf')
     parser.add_argument('--config', type=str, default='config/config.yaml',
                        help='Path to configuration file')
     
@@ -54,6 +65,12 @@ def parse_args():
                        help='Name for this experiment')
     parser.add_argument('--seed', type=int, default=None,
                        help='Random seed')
+    
+    # SSL arguments for new models
+    parser.add_argument('--ssl_temp', type=float, default=None,
+                       help='Temperature for SSL loss')
+    parser.add_argument('--ssl_reg', type=float, default=None,
+                       help='SSL regularization weight')
     
     return parser.parse_args()
 
@@ -79,6 +96,12 @@ def load_config(config_path: str, args: argparse.Namespace) -> dict:
     if args.seed is not None:
         config['experiment']['seed'] = args.seed
         
+    # SSL parameters for new models
+    if args.ssl_temp is not None:
+        config['model']['ssl_temp'] = args.ssl_temp
+    if args.ssl_reg is not None:
+        config['model']['ssl_reg'] = args.ssl_reg
+        
     return config
 
 
@@ -96,6 +119,44 @@ def get_device(device_str: str) -> torch.device:
     if device_str == 'auto':
         return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     return torch.device(device_str)
+
+
+def load_dataset(dataset_name: str, config: dict):
+    """Load dataset based on name"""
+    dataset_config = config['dataset']
+    
+    # Standard datasets
+    if dataset_name in ['ml-100k', 'ml-1m', 'amazon-book']:
+        return RecommenderDataset(
+            name=dataset_name,
+            path=dataset_config['path'],
+            test_size=dataset_config['test_size'],
+            val_size=dataset_config['val_size']
+        )
+    
+    # Extended datasets
+    if EXTENDED_DATASETS:
+        if dataset_name == 'yelp2018':
+            return YelpDataset(
+                name=dataset_name,
+                path=dataset_config['path'],
+                test_size=dataset_config['test_size'],
+                val_size=dataset_config['val_size']
+            )
+        elif dataset_name == 'gowalla':
+            return GowallaDataset(
+                path=dataset_config['path'],
+                test_size=dataset_config['test_size'],
+                val_size=dataset_config['val_size']
+            )
+        elif dataset_name == 'amazon-electronics':
+            return AmazonElectronicsDataset(
+                path=dataset_config['path'],
+                test_size=dataset_config['test_size'],
+                val_size=dataset_config['val_size']
+            )
+    
+    raise ValueError(f"Unknown or unavailable dataset: {dataset_name}")
 
 
 def create_model(model_name: str, dataset: RecommenderDataset, 
@@ -125,6 +186,37 @@ def create_model(model_name: str, dataset: RecommenderDataset,
             latent_dim=model_config['latent_dim'],
             n_layers=model_config['n_layers'],
             dropout=model_config['dropout']
+        )
+    elif model_name == 'sgl':
+        model = SGL(
+            n_users=dataset.n_users,
+            n_items=dataset.n_items,
+            latent_dim=model_config['latent_dim'],
+            n_layers=model_config['n_layers'],
+            dropout=model_config['dropout'],
+            ssl_temp=model_config.get('ssl_temp', 0.2),
+            ssl_reg=model_config.get('ssl_reg', 0.1),
+            aug_type=model_config.get('aug_type', 'ed')
+        )
+    elif model_name == 'simgcl':
+        model = SimGCL(
+            n_users=dataset.n_users,
+            n_items=dataset.n_items,
+            latent_dim=model_config['latent_dim'],
+            n_layers=model_config['n_layers'],
+            noise_eps=model_config.get('noise_eps', 0.1),
+            ssl_temp=model_config.get('ssl_temp', 0.2),
+            ssl_reg=model_config.get('ssl_reg', 0.1)
+        )
+    elif model_name == 'hccf':
+        model = HCCF(
+            n_users=dataset.n_users,
+            n_items=dataset.n_items,
+            latent_dim=model_config['latent_dim'],
+            n_layers=model_config['n_layers'],
+            n_hyperedges=model_config.get('n_hyperedges', 1000),
+            ssl_temp=model_config.get('ssl_temp', 0.2),
+            ssl_reg=model_config.get('ssl_reg', 0.1)
         )
     else:
         raise ValueError(f"Unknown model: {model_name}")
@@ -176,12 +268,7 @@ def main():
     
     # Load dataset
     logger.info(f"Loading dataset: {config['dataset']['name']}")
-    dataset = RecommenderDataset(
-        name=config['dataset']['name'],
-        path=config['dataset']['path'],
-        test_size=config['dataset']['test_size'],
-        val_size=config['dataset']['val_size']
-    )
+    dataset = load_dataset(config['dataset']['name'], config)
     logger.info(f"Dataset loaded - Users: {dataset.n_users}, Items: {dataset.n_items}")
     
     # Build graph
@@ -200,7 +287,7 @@ def main():
     logger.info(f"Creating model: {config['model']['name']}")
     model = create_model(config['model']['name'], dataset, config, device)
     
-    # Special initialization for DyHuCoG
+    # Special initialization for models
     if config['model']['name'] == 'dyhucog':
         # Pre-train cooperative game components
         train_loader = get_dataloader(dataset, 'train', config)
@@ -348,9 +435,20 @@ def main():
     
         total_preprocessing_time = time.time() - dae_start_time
         logger.info(f"\nTotal DyHuCoG preprocessing time: {total_preprocessing_time:.2f}s")
+        
+    elif config['model']['name'] == 'hccf':
+        # Build hypergraph for HCCF
+        logger.info("Building hypergraph for HCCF...")
+        model.build_hypergraph(dataset.train_mat)
     
-    # Create trainer
+    # Create trainer with SSL support
     logger.info("Creating trainer...")
+    
+    # Modify trainer for SSL models
+    if config['model']['name'] in ['sgl', 'simgcl', 'hccf']:
+        logger.info(f"Enabling SSL training for {config['model']['name']}")
+        config['training']['use_ssl'] = True
+    
     trainer = Trainer(
         model=model,
         dataset=dataset,
