@@ -140,24 +140,21 @@ class DyHuCoG(nn.Module):
         self.adj = GraphBuilder.normalize_adj(self.adj)
     
     def forward(self) -> torch.Tensor:
-        """Graph neural network forward propagation
-        
-        Returns:
-            Node embeddings after multi-layer propagation
-        """
         emb = self.embedding.weight
         embs = [emb]
-        
-        # Multi-layer propagation
+
+        # ←— ADD THIS CHECK:
+        if self.adj is None:
+            # no graph built yet → just return base embeddings
+            return emb
+
         for _ in range(self.n_layers):
             emb = torch.sparse.mm(self.adj, emb)
             emb = F.dropout(emb, p=self.dropout, training=self.training)
             embs.append(emb)
-        
-        # Combine embeddings from all layers
-        final_emb = torch.stack(embs, dim=0).mean(dim=0)
-        
-        return final_emb
+
+        return torch.stack(embs, dim=0).mean(dim=0)
+
     
     def predict(self, users: torch.Tensor, items: torch.Tensor) -> torch.Tensor:
         """Predict ratings for user-item pairs
