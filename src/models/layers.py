@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
+from collections import defaultdict  # ADD THIS IMPORT
 
 
 class NGCFLayer(nn.Module):
