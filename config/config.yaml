@@ -1,0 +1,70 @@
+# DyHuCoG Configuration File
+
+# Dataset settings
+dataset:
+  name: ml-100k  # ml-100k, ml-1m, amazon-book
+  path: data/
+  test_size: 0.2
+  val_size: 0.1
+  min_interactions: 5
+  implicit_threshold: 3  # ratings > threshold are positive
+
+# Model settings
+model:
+  name: dyhucog  # dyhucog, lightgcn, ngcf
+  latent_dim: 64
+  n_layers: 3
+  dropout: 0.1
+  
+  # DyHuCoG specific
+  dae_hidden: 128
+  dae_epochs: 30
+  shapley_hidden: 128
+  shapley_epochs: 30
+  n_shapley_samples: 10
+  use_attention: true
+  use_genres: true
+
+# Training settings
+training:
+  epochs: 100
+  batch_size: 256
+  learning_rate: 0.001
+  weight_decay: 1e-4
+  early_stopping_patience: 20
+  eval_every: 10
+  save_best: true
+  num_workers: 4
+  device: auto  # auto, cpu, cuda, cuda:0
+
+# Evaluation settings
+evaluation:
+  k_values: [5, 10, 20]
+  metrics: [precision, recall, ndcg, hit_rate]
+  eval_batch_size: 512
+  n_test_users: -1  # -1 for all users
+
+# Experiment settings
+experiment:
+  n_runs: 5
+  seed: 42
+  save_results: true
+  results_dir: results/
+  checkpoint_dir: checkpoints/
+  log_dir: logs/
+  tensorboard: true
+
+# SHAP analysis settings
+explainability:
+  enable_shap: true
+  shap_sample_size: 1000
+  shap_background_size: 100
+  generate_plots: true
+  save_explanations: true
+  
+# Logging settings
+logging:
+  level: INFO  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  save_to_file: true
+  log_file: logs/dyhucog.log
