@@ -18,10 +18,10 @@ model:
   
   # DyHuCoG specific
   dae_hidden: 128
-  dae_epochs: 10
+  dae_epochs: 30
   shapley_hidden: 128
-  shapley_epochs: 10
-  n_shapley_samples: 5
+  shapley_epochs: 30
+  n_shapley_samples: 10
   use_attention: true
   use_genres: true
 
