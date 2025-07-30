@@ -6,6 +6,7 @@ Training script for DyHuCoG and baseline models
 import os
 import sys
 import argparse
+import time
 import yaml
 import torch
 import numpy as np
