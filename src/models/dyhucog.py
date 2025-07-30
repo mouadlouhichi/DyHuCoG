@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Tuple, Optional
-import numpy as np
 
 from .cooperative_game import CooperativeGameDAE, ShapleyValueNetwork
 from ..utils.graph_builder import GraphBuilder
@@ -28,7 +27,7 @@ class DyHuCoG(nn.Module):
         self.n_users = n_users
         self.n_items = n_items
         self.n_genres = n_genres
-        self.n_nodes = n_users + n_items + n_genres
+        self.n_nodes = n_users + n_items + (n_genres if n_genres is not None else 0)
         self.config = config
 
         # Extract config parameters
@@ -43,25 +42,22 @@ class DyHuCoG(nn.Module):
         nn.init.normal_(self.embedding.weight, std=0.01)
 
         # Cooperative game components
-        # ❗️ FIXED: match DAE signature (input_dim, hidden_dim, output_dim, dropout)
         self.dae = CooperativeGameDAE(
             input_dim=n_items,
             hidden_dim=config['dae_hidden'],
-            output_dim=1,           # scalar value function
+            output_dim=1,
             dropout=self.dropout
         )
-
-        # ❗️ FIXED: match ShapleyValueNetwork signature (input_dim, hidden_dim, n_items)
         self.shapley_net = ShapleyValueNetwork(
             input_dim=n_items,
             hidden_dim=config['shapley_hidden'],
             n_items=n_items
         )
 
-        # Build GNN layers
+        # Build GNN layers – GraphBuilder takes no args
         self.gnn_layers = nn.ModuleList()
         for _ in range(self.n_layers):
-            self.gnn_layers.append(GraphBuilder(self.latent_dim, self.use_attention))
+            self.gnn_layers.append(GraphBuilder())
 
         if self.use_attention:
             self.attention = nn.Sequential(
@@ -71,7 +67,7 @@ class DyHuCoG(nn.Module):
                 nn.Sigmoid()
             )
 
-        # Edge weights dictionary
+        # Edge weights dict
         self.edge_weights = {}
         self.adj = None
 
@@ -84,17 +80,15 @@ class DyHuCoG(nn.Module):
         Returns:
             Dictionary mapping (user, item) pairs to edge weights
         """
-        # Convert to zero-based
-        mat = train_mat[1:, 1:].to(torch.float32)  # [U, I]
-        # 1) Pretrain DAE to learn value function
-        dae_out = self.dae(mat)                   # [U, 1]
-        # 2) Approximate Shapley
+        mat = train_mat[1:, 1:].to(torch.float32)
+        # Pretrain DAE to learn value function
+        _ = self.dae(mat)
+        # Approximate Shapley
         n_samples = self.config.get('n_shapley_samples', 5)
         shap_vals = self.shapley_net.compute_exact_shapley_sample(
             mat, self.dae.forward, n_samples=n_samples
-        )  # [U, I]
+        )
 
-        # Build (u, i) -> weight mapping
         weights = {}
         users, items = mat.shape
         for u in range(users):
