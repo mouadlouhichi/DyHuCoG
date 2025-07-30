@@ -160,7 +160,7 @@ def generate_negative_samples(data_path: Path, n_neg_per_pos: int = 4):
     
     # Load processed data
     train_df = pd.read_csv(data_path / 'train.csv')
-    stats = pd.read_csv(data_path / 'stats.csv', index_col=0, squeeze=True)
+    stats = pd.read_csv(data_path / 'stats.csv', index_col=0).squeeze("columns")
     
     n_users = int(stats['n_users'])
     n_items = int(stats['n_items'])
