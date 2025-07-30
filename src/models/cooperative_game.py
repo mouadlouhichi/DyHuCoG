@@ -2,12 +2,12 @@
 Cooperative Game components for DyHuCoG
 """
 
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Callable
 import numpy as np
-import time # For timing
 
 
 class CooperativeGameDAE(nn.Module):
