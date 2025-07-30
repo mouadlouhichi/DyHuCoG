@@ -24,18 +24,21 @@ class CooperativeGameDAE(nn.Module):
         self.n_items = n_items
         self.hidden_dim = hidden_dim
         
-        # Encoder
+        # Encoder with batch normalization
         self.encoder = nn.Sequential(
             nn.Linear(n_items, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.BatchNorm1d(hidden_dim // 2),
             nn.ReLU()
         )
         
         # Decoder
         self.decoder = nn.Sequential(
             nn.Linear(hidden_dim // 2, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, n_items),
@@ -54,9 +57,9 @@ class CooperativeGameDAE(nn.Module):
         """
         # Add noise during training
         if self.training and noise_factor > 0:
-            noise = torch.randn_like(x) * noise_factor
-            x_noisy = x + noise
-            x_noisy = torch.clamp(x_noisy, 0, 1)
+            # Add dropout noise instead of Gaussian noise for binary data
+            noise_mask = torch.bernoulli(torch.ones_like(x) * (1 - noise_factor))
+            x_noisy = x * noise_mask
         else:
             x_noisy = x
         
@@ -65,34 +68,6 @@ class CooperativeGameDAE(nn.Module):
         out = self.decoder(h)
         
         return out
-    
-    def get_coalition_value(self, coalition_vector: torch.Tensor) -> torch.Tensor:
-        """Get value for a coalition (subset of items)
-        
-        Args:
-            coalition_vector: Binary vector indicating coalition membership
-            
-        Returns:
-            Coalition value
-        """
-        with torch.no_grad():
-            reconstructed = self.forward(coalition_vector, noise_factor=0)
-            # Value is the sum of reconstructed probabilities for items in coalition
-            value = (reconstructed * coalition_vector).sum(dim=-1)
-        return value
-    
-    def get_latent_representation(self, x: torch.Tensor) -> torch.Tensor:
-        """Get latent representation from encoder
-        
-        Args:
-            x: Input item vectors
-            
-        Returns:
-            Latent representations
-        """
-        return self.encoder(x)
-
-
 class ShapleyValueNetwork(nn.Module):
     """FastSHAP-style network for Shapley value approximation
     
